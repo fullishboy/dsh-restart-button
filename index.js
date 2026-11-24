@@ -87,7 +87,7 @@ export function apply(ctx) {
     }
   }, 'restart-button: state directory')
 
-  ctx.effect(() => ctx.connection.fetch.register({
+  const route = {
     path: ROUTE,
     methods: ['POST'],
     requestBody: 'buffered',
@@ -128,5 +128,12 @@ export function apply(ctx) {
       }, 150)
       return Response.json({ ok: true, accepted: true, helperPid: pid }, { status: 202 })
     },
-  }), 'restart-button: POST route')
+  }
+
+  // Register once the web listener exists: the connection service refuses a
+  // route before it knows the origin it will be served from.
+  const register = () => ctx.effect(() => ctx.connection.fetch.register(route), 'restart-button: POST route')
+  ctx.inject(['webServer'], (child) => {
+    child.effect(register, 'restart-button: route registration')
+  })
 }
