@@ -36,7 +36,7 @@ window.__ModuleLoader__.load({
         sending: 'Restarting…',
         intent: 'Restarting…',
         failed: 'Could not reach the Host.',
-        notDesktop: 'Only the desktop app can restart itself.',
+        noSupervisor: 'Start the app through dsh-watch.mjs to use this.',
       },
       zh: {
         idle: '重启',
@@ -48,7 +48,7 @@ window.__ModuleLoader__.load({
         sending: '正在重启…',
         intent: '正在重启…',
         failed: '没能连到 Host。',
-        notDesktop: '只有桌面版能自行重启。',
+        noSupervisor: '请用 dsh-watch.mjs 启动，才能这样重启。',
       },
     }
 
@@ -190,7 +190,7 @@ window.__ModuleLoader__.load({
         } catch {
           reason = undefined
         }
-        settle(reason === 'busy' ? 'busy' : reason === 'not-desktop' ? 'notDesktop' : 'failed', 5000)
+        settle(reason === 'busy' ? 'busy' : reason === 'no-supervisor' ? 'noSupervisor' : 'failed', 5000)
       }, [settle])
 
       const cancel = React.useCallback(
@@ -224,10 +224,9 @@ window.__ModuleLoader__.load({
                 ? text.busy
                 : phase === 'intent'
                   ? text.intent
-                  : phase === 'notDesktop'
-                    ? text.notDesktop
+                  : phase === 'noSupervisor'
+                    ? text.noSupervisor
                     : text.failed
-
       const body =
         phase === 'confirm'
           ? [

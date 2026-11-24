@@ -11,14 +11,14 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
-    "./relaunch": "./relaunch.mjs",
+    "./supervisor": "./supervisor/dsh-watch.mjs",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
     "client.js",
-    "relaunch.mjs",
+    "supervisor",
     "cordis.patch.yml",
     "locale/en.json",
     "locale/zh.json",
