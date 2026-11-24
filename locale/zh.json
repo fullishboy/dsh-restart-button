@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "重启按钮",
+    "description": "在侧栏底部加一行「重启」。点一次就地展开二次确认；确认后交给 Host 重启，运行中的对话会被拦下。",
+    "detail": "docs/DETAIL.md"
+  }
+}

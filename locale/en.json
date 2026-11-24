@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Restart button",
+    "description": "Adds a Restart row to the sidebar foot. One press opens an in-place confirm; confirming makes the Host restart DeepSeek Harness, and a running agent turn blocks it.",
+    "detail": "docs/DETAIL.md"
+  }
+}

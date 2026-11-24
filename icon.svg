@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36" role="img" aria-label="Restart button">
+  <rect x="2" y="2" width="32" height="32" rx="9" fill="#247bbf"/>
+  <g fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M25.5 18a7.5 7.5 0 1 1-2.2-5.3"/>
+    <path d="M25.5 10.5v5.2h-5.2"/>
+  </g>
+</svg>

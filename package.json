@@ -1,0 +1,40 @@
+{
+  "name": "@dsh-local/restart-button",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "One-click restart for DeepSeek Harness Desktop, with a two-step confirm.",
+  "license": "MIT",
+  "engines": {
+    "dsh": ">=0.2.0-rc.5"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./relaunch": "./relaunch.mjs",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "relaunch.mjs",
+    "cordis.patch.yml",
+    "locale/en.json",
+    "locale/zh.json",
+    "docs",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}
