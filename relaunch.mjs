@@ -16,6 +16,8 @@ import { appendFileSync } from 'node:fs'
 const DEADLINE_MS = 30000
 /** How long the shell may stay in the process table before we relaunch anyway. */
 const SHELL_SETTLE_MS = 15000
+/** Keep polling after the shell leaves, so a late crash dialog cannot eat the relaunch. */
+const RELAUNCH_RETRY_MS = 1200
 const POLL_MS = 200
 
 let options
@@ -30,7 +32,10 @@ if (typeof exe !== 'string' || exe === '') process.exit(3)
 
 const logFile = options.log
 const name = exe.split(/[\\/]/).pop() ?? exe
-let acted = false
+/** Set once the relaunch attempt has been made, so the pipe cannot double-fire. */
+let acting = false
+/** Set when the host is gone and the shell has already been waited for. */
+let waiting = false
 
 function log(line) {
   if (typeof logFile !== 'string') return
@@ -58,16 +63,19 @@ function shellAlive() {
 }
 
 function relaunch() {
-  if (acted) return
-  acted = true
+  if (acting) return
+  acting = true
   try {
     const child = spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: false })
     child.unref()
     log(`relaunched ${exe}`)
   } catch (error) {
     log(`relaunch failed: ${String(error)}`)
+    acting = false
+    setTimeout(relaunch, RELAUNCH_RETRY_MS)
+    return
   }
-  setTimeout(() => process.exit(0), 1000)
+  setTimeout(() => process.exit(0), 4000)
 }
 
 /**
@@ -89,7 +97,8 @@ function waitForShellExit(startedAt) {
 }
 
 function hostGone(reason) {
-  if (acted) return
+  if (waiting || acting) return
+  waiting = true
   log(`host pipe closed (${reason})`)
   waitForShellExit(Date.now())
 }
@@ -100,7 +109,5 @@ process.stdin.on('error', () => hostGone('error'))
 process.stdin.resume()
 
 setTimeout(() => {
-  if (acted) return
-  log('deadline reached before the host exited; continuing anyway')
-  waitForShellExit(Date.now())
+  hostGone('deadline')
 }, DEADLINE_MS)
