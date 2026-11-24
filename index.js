@@ -93,6 +93,7 @@ export function apply(ctx) {
     requestBody: 'buffered',
     async fetch() {
       const exe = process.env.DSH_NODE_EXECUTABLE
+      appendLog(logFile, `request received exe=${String(exe)}`)
       if (exe === undefined || exe === '') {
         return Response.json({ ok: false, reason: 'not-desktop' }, { status: 409 })
       }
