@@ -20,6 +20,7 @@
     "client.js",
     "supervisor",
     "start-dsh.bat",
+    "run-hidden.vbs",
     "cordis.patch.yml",
     "locale/en.json",
     "locale/zh.json",
