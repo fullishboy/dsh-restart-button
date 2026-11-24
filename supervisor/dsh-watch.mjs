@@ -19,10 +19,10 @@
  *
  * Usage: node dsh-watch.mjs [--exe <path>] [--request <path>] [--log <path>]
  */
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 const POLL_MS = 500
 /** Pause after the old instance is gone, so its single-instance lock is released. */
@@ -32,10 +32,15 @@ const RELAUNCH_DELAY_MS = 1200
  * because another instance held the single-instance lock.
  */
 const IMMEDIATE_EXIT_MS = 4000
-/** How long to wait before trying again after such an exit. */
+/**
+ * How long to wait before trying again after such an exit. Another instance
+ * holds the single-instance lock only while it runs, and the user may keep it
+ * open for as long as they like, so the supervisor waits instead of giving up:
+ * every quick exit means "someone else is still there", not "this is broken".
+ */
 const RETRY_DELAY_MS = 2000
-/** Consecutive quick exits tolerated before the supervisor gives up and says why. */
-const MAX_QUICK_FAILURES = 5
+/** Ceiling for the backoff, so an idle wait costs nothing but is still quick to notice. */
+const MAX_RETRY_DELAY_MS = 30000
 
 function parseArgs(argv) {
   const options = {}
@@ -121,9 +126,57 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * Sleep a backoff while still listening for a restart request. Waiting out the
+ * whole backoff would leave a button press unanswered for up to 30 seconds, and
+ * the press is exactly what a user expects to be honoured right away.
+ * @param ms - the backoff for this round.
+ * @returns the request, when one arrived during the wait.
+ */
+async function waitForRequest(ms) {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    const request = takeRequest()
+    if (request !== undefined) return request
+    await delay(POLL_MS)
+  }
+  return undefined
+}
+
 /** Whether the app process we started has left. */
 function stillRunning(child) {
   return child.exitCode === null && child.signalCode === null
+}
+
+/** The process name the app runs under, without the .exe the file system adds. */
+function appProcessName() {
+  const base = basename(exe)
+  return base.toLowerCase().endsWith('.exe') ? base.slice(0, -4) : base
+}
+
+/**
+ * The app process that currently owns the single-instance lock — the one with a
+ * visible window. This matters because the app the user opens by hand is not the
+ * child this supervisor started: that child exits at once while the hand-opened
+ * one keeps running, so supervising only our own child would never end it.
+ * @returns the pid, or undefined when no app instance is running.
+ */
+function runningAppPid() {
+  const script =
+    `Get-Process -Name '${appProcessName()}' -ErrorAction SilentlyContinue | ` +
+    'Where-Object { $_.MainWindowHandle -ne 0 } | ' +
+    'Select-Object -First 1 -ExpandProperty Id'
+  try {
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 15000,
+    }).trim()
+    const pid = Number.parseInt(out, 10)
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** Supervise one app instance until it exits, restarting it when asked. */
@@ -134,13 +187,20 @@ async function supervise() {
   const poll = setInterval(async () => {
     const request = takeRequest()
     if (request === undefined) return
-    // A request that arrives while the app is going down is served by the next
-    // instance; only act on one we can act on now.
-    if (!stillRunning(child)) return
+    // The app may have been opened by hand, so the target is whatever instance
+    // holds the single-instance lock right now, not only the child we spawned.
+    const target = stillRunning(child) ? child.pid : runningAppPid()
+    if (target === undefined) {
+      // Nothing is up: the next instance start serves this request instead.
+      log(`restart requested (${String(request.reason ?? 'unknown')}) but no app is running; it will start fresh`)
+      requested = true
+      clearInterval(poll)
+      return
+    }
     requested = true
     clearInterval(poll)
-    log(`restart requested (${String(request.reason ?? 'unknown')}); ending pid=${String(child.pid)}`)
-    await endApp(child.pid)
+    log(`restart requested (${String(request.reason ?? 'unknown')}); ending pid=${String(target)}`)
+    await endApp(target)
   }, POLL_MS)
 
   const code = await new Promise((resolve) => {
@@ -168,9 +228,12 @@ async function main() {
   rmSync(requestFile, { force: true })
   writeFileSync(join(dirname(requestFile), 'watch.pid'), `${String(process.pid)}\n`)
 
-  // Starts that die at once are counted, not retried forever: probing the
-  // process table for "is another instance up" is what caused a launch storm,
-  // so a few quick failures end with a log line instead of a spinning loop.
+  // Starts that die at once mean another instance holds the single-instance
+  // lock, which is the normal situation when this runs beside an app the user
+  // opened by hand. Waiting is the whole point: the moment that instance goes
+  // away, the next attempt takes over. Probing the process table for "is
+  // another instance up" is what caused a launch storm before, so the evidence
+  // used here is only the app's own lifetime.
   let quickFailures = 0
 
   for (;;) {
@@ -190,18 +253,28 @@ async function main() {
     }
 
     quickFailures += 1
-    if (quickFailures > MAX_QUICK_FAILURES) {
-      log(
-        `the app exited at once ${String(quickFailures)} times; ` +
-          'another instance is probably already running. Close it and start this again.',
-      )
-      process.exit(code)
+    // Back off towards a slow pulse so a long open session costs almost nothing,
+    // but never stop: the app cannot start until the other instance is gone.
+    const wait = Math.min(RETRY_DELAY_MS * quickFailures, MAX_RETRY_DELAY_MS)
+    log(
+      `the app exited at once (${String(quickFailures)} in a row); ` +
+        `another instance is probably already running - waiting ${String(Math.round(wait / 1000))}s`,
+    )
+    // A request can arrive during the backoff: honour it now instead of after
+    // the whole wait, by ending whichever instance currently holds the lock.
+    const duringWait = await waitForRequest(wait)
+    if (duringWait !== undefined) {
+      const target = runningAppPid()
+      if (target === undefined) {
+        log(`restart requested (${String(duringWait.reason ?? 'unknown')}) but no app is running; starting one`)
+      } else {
+        log(`restart requested (${String(duringWait.reason ?? 'unknown')}); ending pid=${String(target)}`)
+        await endApp(target)
+      }
+      quickFailures = 0
+      await delay(RELAUNCH_DELAY_MS)
+      continue
     }
-
-    // Another instance holds the single-instance lock only while it runs, so
-    // wait a beat and try again. The delay keeps a misdetection from spinning.
-    log(`the app exited at once (${String(quickFailures)}/${String(MAX_QUICK_FAILURES)}); retrying`)
-    await delay(RETRY_DELAY_MS)
   }
 }
 
@@ -226,6 +299,8 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
     process.exit(0)
   })
 }
+
+process.on('exit', (code) => log(`supervisor process exiting code=${String(code)} pid=${String(process.pid)}`))
 
 main().catch((error) => {
   log(`supervisor crashed: ${String(error)}`)
