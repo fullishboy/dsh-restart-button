@@ -6,14 +6,14 @@ Adds a **Restart** row to the bottom of the sidebar, directly above Settings.
 
 1. One press turns the row into an in-place confirm: **Restart now?** with `Restart` and `Cancel`.
 2. `Cancel`, Escape, or a press on the row returns it to idle.
-3. `Restart` posts to `/dsh-local/restart-button/request` on the shared API channel, which only an authenticated browser session can reach.
+3. `Restart` posts to `/api/restart-button/request` on the shared connection channel, which only an authenticated browser session of this Host can reach.
 4. The Host launches a detached helper, starts shutting itself down, and the helper relaunches the desktop executable once the old Host is gone.
 
 ## The work guard
 
 Restarting with an agent turn in flight loses that turn, so the row refuses while one runs:
 
-- The row reads the Host list's `running` flag through the standard `useSessions` hook and shows *A turn is running. Stop it first.* instead of the confirm.
+- The row reads the Host session list's `running` flag and shows *A turn is running. Stop it first.* instead of the confirm.
 - The Host re-checks the same fact when the request arrives and answers `409 busy` rather than restarting.
 
 ## What happens on screen

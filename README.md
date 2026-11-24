@@ -6,8 +6,8 @@ Press it once and the row turns into an in-place confirm: `Restart` and `Cancel`
 
 ## What it does
 
-1. The row asks the Host list whether any agent turn is running. If one is, the row says **A turn is running. Stop it first.** and refuses to open the confirm.
-2. `Restart` posts to `/dsh-local/restart-button/request` on the shared API channel, which only an authenticated browser session can reach.
+1. The row asks the Host session list whether any agent turn is running. If one is, the row says **A turn is running. Stop it first.** and refuses to open the confirm.
+2. `Restart` posts to `/api/restart-button/request` on the shared connection channel, which only an authenticated browser session of this Host can reach.
 3. The Host launches a detached helper and starts shutting itself down.
 4. The helper waits for the old Host to leave and for the previous desktop process to exit, then starts `DeepSeek Harness.exe` again.
 
@@ -29,7 +29,7 @@ Then start DSH once more; the row appears in the sidebar foot.
 
 - `index.js` — Host half. Registers the exact Fetch route, checks for running sessions, records the request, stops the Host through the `appExit` command-line service.
 - `relaunch.mjs` — detached helper. Waits for the Host pipe to close, polls `tasklist` for the old executable, then relaunches it.
-- `client.js` — Client half. The sidebar-foot row, its in-place confirm, the work guard over the standard `useSessions` hook, and its own CSS. The refresh glyph is inlined: the Harness UI packages are bundled into the web frontend rather than exposed to plugin bundles.
+- `client.js` — Client half. The sidebar-foot row, its in-place confirm, the work guard over the Host session list, and its own CSS. The refresh glyph is inlined: the Harness UI packages are bundled into the web frontend rather than exposed to plugin bundles.
 - `locale/en.json`, `locale/zh.json` — title, description, and this page.
 - `cordis.patch.yml` — inserts the `restart-button` row.
 
