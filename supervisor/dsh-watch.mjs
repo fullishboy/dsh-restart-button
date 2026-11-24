@@ -27,6 +27,15 @@ import { dirname, join } from 'node:path'
 const POLL_MS = 500
 /** Pause after the old instance is gone, so its single-instance lock is released. */
 const RELAUNCH_DELAY_MS = 1200
+/**
+ * An app that stays up less than this did not really start: it exited at once
+ * because another instance held the single-instance lock.
+ */
+const IMMEDIATE_EXIT_MS = 4000
+/** How long to wait before trying again after such an exit. */
+const RETRY_DELAY_MS = 2000
+/** Consecutive quick exits tolerated before the supervisor gives up and says why. */
+const MAX_QUICK_FAILURES = 5
 
 function parseArgs(argv) {
   const options = {}
@@ -157,19 +166,66 @@ async function main() {
   }
   // A request left behind by an earlier crash must not restart anything.
   rmSync(requestFile, { force: true })
+  writeFileSync(join(dirname(requestFile), 'watch.pid'), `${String(process.pid)}\n`)
+
+  // Starts that die at once are counted, not retried forever: probing the
+  // process table for "is another instance up" is what caused a launch storm,
+  // so a few quick failures end with a log line instead of a spinning loop.
+  let quickFailures = 0
 
   for (;;) {
+    const startedAt = Date.now()
     const { code, requested } = await supervise()
-    if (!requested) {
+    if (requested) {
+      quickFailures = 0
+      await delay(RELAUNCH_DELAY_MS)
+      continue
+    }
+
+    const lasted = Date.now() - startedAt
+    if (lasted >= IMMEDIATE_EXIT_MS) {
+      // A real session ended on its own: the supervisor's job is done.
       log(`supervisor exiting code=${String(code)}`)
       process.exit(code)
     }
-    await delay(RELAUNCH_DELAY_MS)
+
+    quickFailures += 1
+    if (quickFailures > MAX_QUICK_FAILURES) {
+      log(
+        `the app exited at once ${String(quickFailures)} times; ` +
+          'another instance is probably already running. Close it and start this again.',
+      )
+      process.exit(code)
+    }
+
+    // Another instance holds the single-instance lock only while it runs, so
+    // wait a beat and try again. The delay keeps a misdetection from spinning.
+    log(`the app exited at once (${String(quickFailures)}/${String(MAX_QUICK_FAILURES)}); retrying`)
+    await delay(RETRY_DELAY_MS)
+  }
+}
+
+const pidFile = join(dirname(requestFile), 'watch.pid')
+
+/** Drop the pid file, so the plugin stops believing a supervisor is watching. */
+function clearPidFile() {
+  try {
+    if (!existsSync(pidFile)) return
+    if (Number.parseInt(readFileSync(pidFile, 'utf8').trim(), 10) === process.pid) rmSync(pidFile, { force: true })
+  } catch {
+    // Nothing to do: the plugin also checks the pid is alive.
   }
 }
 
 mkdirSync(dirname(requestFile), { recursive: true })
-writeFileSync(join(dirname(requestFile), 'watch.pid'), `${String(process.pid)}\n`)
+writeFileSync(pidFile, `${String(process.pid)}\n`)
+process.on('exit', clearPidFile)
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  process.on(signal, () => {
+    clearPidFile()
+    process.exit(0)
+  })
+}
 
 main().catch((error) => {
   log(`supervisor crashed: ${String(error)}`)

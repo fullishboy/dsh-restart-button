@@ -13,7 +13,7 @@
  * is what ends the app and starts it again. Without that supervisor watching,
  * the request file simply sits there and nothing happens.
  */
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -46,10 +46,30 @@ function runningWork(ctx) {
   return running
 }
 
-/** Whether a supervisor from `supervisor/dsh-watch.mjs` is watching this home. */
+/**
+ * Whether a supervisor from `supervisor/dsh-watch.mjs` is watching this home.
+ *
+ * The pid file outlives a supervisor that was killed, so the recorded pid is
+ * checked rather than trusted: a stale one must not make the button accept a
+ * request that nobody will act on.
+ */
 function supervisorRunning(stateDir) {
-  if (!existsSync(join(stateDir, 'watch.pid'))) return false
-  return true
+  const pidFile = join(stateDir, 'watch.pid')
+  if (!existsSync(pidFile)) return false
+  let pid = Number.NaN
+  try {
+    pid = Number.parseInt(readFileSync(pidFile, 'utf8').trim(), 10)
+  } catch {
+    return false
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // EPERM means the process exists but belongs to somebody else.
+    return error?.code === 'EPERM'
+  }
 }
 
 function appendLog(file, line) {

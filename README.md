@@ -13,6 +13,8 @@ The desktop app is an Electron shell around a Host process, and neither one can 
 
 So the restart decision sits outside the app. `supervisor/dsh-watch.mjs` starts `DeepSeek Harness.exe`, waits for it, and starts it again when the row asks for one. Start the app through that script — a shortcut to it, or `node dsh-watch.mjs` — and the row works. Start the app the old way and the row still appears, but it answers *Start the app through dsh-watch.mjs to use this.*
 
+Start the supervisor **instead of** the app, not next to it. A second start while the app is already open cannot obtain the single-instance lock, so it exits at once; the supervisor retries that a few times, two seconds apart, and then gives up with a line in `watch.log` saying another instance is probably running.
+
 ## What it does
 
 1. The row asks the Host session list whether any agent turn is running. If one is, the row says **A turn is running. Stop it first.** and refuses to open the confirm.
@@ -54,7 +56,7 @@ Running the supervisor by hand needs a Node executable on `PATH`. Without one, p
 - `locale/en.json`, `locale/zh.json` — title, description, and this page.
 - `cordis.patch.yml` — inserts the `restart-button` row.
 
-State lives in `~/.dsh/restart-button/`: `watch.pid` (written by the supervisor), `restart-request.json` (written by the Host, consumed by the supervisor), `restart.log`, `watch.log`.
+State lives in `~/.dsh/restart-button/`: `watch.pid` (written by the supervisor, removed when it exits), `restart-request.json` (written by the Host, consumed by the supervisor), `restart.log`, `watch.log`. The Host checks that the pid in `watch.pid` is still alive before accepting a restart, so a supervisor that was killed does not leave the row accepting requests nobody will act on.
 
 ## Limits
 
