@@ -1,20 +1,22 @@
 /**
- * Detached relaunch helper: starts the desktop executable once the Host that
- * spawned it has exited and the previous desktop process is gone.
+ * Detached relaunch helper for `@dsh-local/restart-button`.
  *
- * Usage: electron-runtime relaunch.mjs '{"exe":"C:\\...\\DeepSeek Harness.exe"}'
+ * Usage: <node> relaunch.mjs '{"exe":"C:\\...\\DeepSeek Harness.exe","log":"C:\\...\\restart.log"}'
  *
- * The runtime keeps `process.stdin` open, so the pipe stays open while the Host
- * lives and reports end-of-stream when it exits. A hard deadline covers the case
- * where the pipe never closes.
+ * The Host spawns this with a pipe and keeps the write end open, so `stdin`
+ * reports end-of-stream exactly when the Host goes away. After that the helper
+ * waits for the desktop shell process to leave the process table and starts it
+ * again. A deadline covers the case where the pipe never closes.
  */
 
-import { spawn, execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 
-const DEADLINE_MS = 20000
+/** Give up on the pipe and act anyway. */
+const DEADLINE_MS = 30000
+/** How long the shell may stay in the process table before we relaunch anyway. */
+const SHELL_SETTLE_MS = 15000
 const POLL_MS = 200
-const SETTLE_MS = 6000
 
 let options
 try {
@@ -27,40 +29,37 @@ const exe = options.exe
 if (typeof exe !== 'string' || exe === '') process.exit(3)
 
 const logFile = options.log
-let exited = false
-let started = false
+const name = exe.split(/[\\/]/).pop() ?? exe
+let acted = false
 
 function log(line) {
   if (typeof logFile !== 'string') return
   try {
     appendFileSync(logFile, `${new Date().toISOString()} helper ${line}\n`)
   } catch {
-    // ignore
+    // Logging is best effort.
   }
 }
 
-/** Whether the desktop executable still has a live process. */
-function desktopAlive() {
+/** Whether the desktop shell still owns a live process. */
+function shellAlive() {
   if (process.platform !== 'win32') return false
   try {
-    const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + basename(), '/NH'], {
+    const out = execFileSync('tasklist', ['/FI', `IMAGENAME eq ${name}`, '/NH'], {
       encoding: 'utf8',
-      timeout: 4000,
+      timeout: 5000,
       windowsHide: true,
     })
-    return out.toLowerCase().includes(basename().toLowerCase())
+    return out.toLowerCase().includes(name.toLowerCase())
   } catch {
-    return false
+    // An unreadable process table is not proof the shell is gone; wait it out.
+    return true
   }
-}
-
-function basename() {
-  return exe.split(/[\\/]/).pop() ?? exe
 }
 
 function relaunch() {
-  if (started) return
-  started = true
+  if (acted) return
+  acted = true
   try {
     const child = spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: false })
     child.unref()
@@ -71,31 +70,37 @@ function relaunch() {
   setTimeout(() => process.exit(0), 1000)
 }
 
-/** Wait until the desktop process leaves the table, then bounce it back. */
-function waitDesktopGone(startedAt) {
-  if (Date.now() - startedAt > SETTLE_MS) {
+/**
+ * Poll the process table until the shell is gone.
+ * @param startedAt - when the wait began, used for the settle window.
+ */
+function waitForShellExit(startedAt) {
+  if (Date.now() - startedAt > SHELL_SETTLE_MS) {
+    log('shell still running after the settle window; relaunching anyway')
     relaunch()
     return
   }
-  if (!desktopAlive()) {
+  if (!shellAlive()) {
+    log('shell exited')
     relaunch()
     return
   }
-  setTimeout(() => waitDesktopGone(startedAt), POLL_MS)
+  setTimeout(() => waitForShellExit(startedAt), POLL_MS)
 }
 
-process.stdin.on('end', () => {
-  exited = true
-  log('host pipe closed')
-  waitDesktopGone(Date.now())
-})
-process.stdin.on('close', () => {
-  exited = true
-  waitDesktopGone(Date.now())
-})
+function hostGone(reason) {
+  if (acted) return
+  log(`host pipe closed (${reason})`)
+  waitForShellExit(Date.now())
+}
+
+process.stdin.on('end', () => hostGone('end'))
+process.stdin.on('close', () => hostGone('close'))
+process.stdin.on('error', () => hostGone('error'))
 process.stdin.resume()
 
 setTimeout(() => {
-  if (!exited) log('deadline reached before the host exited')
-  waitDesktopGone(Date.now())
+  if (acted) return
+  log('deadline reached before the host exited; continuing anyway')
+  waitForShellExit(Date.now())
 }, DEADLINE_MS)
