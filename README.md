@@ -36,17 +36,13 @@ dsh plugin add <path-to-this-directory>
 
 Then start DSH once more; the row appears in the sidebar foot.
 
-For the row to actually restart anything, launch the app through the supervisor:
+For the row to actually restart anything, launch the app through the supervisor. Double-click `start-dsh.bat`, which points at the app's own bundled Node runtime, or run it yourself:
 
 ```sh
 node supervisor/dsh-watch.mjs [--exe "C:\path\to\DeepSeek Harness.exe"]
 ```
 
-Running the supervisor by hand needs a Node executable on `PATH`. Without one, point a shortcut directly at the app's own bundled runtime:
-
-```bat
-"%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe" "C:\path\to\supervisor\dsh-watch.mjs"
-```
+Keep the launcher window open: closing it stops the supervisor and the row stops being able to restart. On Windows a shortcut whose target is `start-dsh.bat` (with *Run* set to *Minimized*) is the least obtrusive way to make it your usual way in.
 
 ## How it is built
 

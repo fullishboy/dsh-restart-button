@@ -19,6 +19,7 @@
     "index.js",
     "client.js",
     "supervisor",
+    "start-dsh.bat",
     "cordis.patch.yml",
     "locale/en.json",
     "locale/zh.json",
