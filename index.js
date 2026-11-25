@@ -15,8 +15,11 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+/** Name of the packaged desktop executable. */
+const APP_EXECUTABLE = 'DeepSeek Harness.exe'
 
 /** Exact Fetch route the browser button posts to. */
 export const ROUTE = '/api/restart-button/request'
@@ -84,6 +87,34 @@ function announcedPid(pidFile) {
   }
 }
 
+/**
+ * The packaged executable that runs this profile, or undefined off-desktop.
+ *
+ * The Desktop Host starts the profile with `argv[2]` set to the dsh directory
+ * inside `app.asar` (`<root>/resources/app.asar/dsh`), and its own environment
+ * carries `DSH_DESKTOP_NODE_EXECUTABLE` — the bundled Node, not the app. So the
+ * executable is derived from the packaged layout, never looked up in the PATH.
+ */
+function applicationExecutable() {
+  const candidates = []
+  const dshDirectory = process.argv[2]
+  if (typeof dshDirectory === 'string' && dshDirectory !== '') {
+    candidates.push(join(dirname(dshDirectory), '..', '..', '..', APP_EXECUTABLE))
+  }
+  const localAppData = process.env.LOCALAPPDATA
+  if (typeof localAppData === 'string' && localAppData !== '') {
+    candidates.push(join(localAppData, 'Programs', 'DeepSeek Harness', APP_EXECUTABLE))
+  }
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      // A malformed candidate is simply skipped.
+    }
+  }
+  return undefined
+}
+
 export function apply(ctx) {
   const stateDir = stateDirectory()
   const logFile = join(stateDir, 'restart.log')
@@ -108,11 +139,12 @@ export function apply(ctx) {
         return Response.json({ ok: false, reason: 'busy', running }, { status: 409 })
       }
 
-      const exe = process.env.DSH_NODE_EXECUTABLE ?? ''
-      if (exe === '') {
-        appendLog(logFile, 'refused: DSH_NODE_EXECUTABLE is missing, so this is not the desktop app')
+      const exe = applicationExecutable()
+      if (exe === undefined) {
+        appendLog(logFile, `refused: no ${APP_EXECUTABLE} next to the profile; this is not the packaged desktop app`)
         return Response.json({ ok: false, reason: 'not-desktop' }, { status: 409 })
       }
+      appendLog(logFile, `executable resolved: ${exe}`)
 
       // A leftover announcement from an earlier helper must not be mistaken for
       // the one this request starts.
