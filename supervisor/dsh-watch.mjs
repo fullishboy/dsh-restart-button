@@ -108,6 +108,10 @@ async function main() {
     return 1
   }
 
+  // End the Electron main process, not the Host: with `/T` the whole tree goes
+  // down at once, so Electron never runs its crash reporter and no "startup
+  // failed" dialog appears. Killing the Host instead leaves the shell alive to
+  // report a crash.
   log(`restarting ${target}`)
   killTree(target)
   if (!(await waitGone(target, GONE_TIMEOUT_MS))) {

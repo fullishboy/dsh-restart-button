@@ -154,7 +154,17 @@ export function apply(ctx) {
         // Nothing else reads it before the new helper writes.
       }
 
-      const payload = JSON.stringify({ pid: process.pid, exe, log: logFile, pidFile })
+      // The helper ends the Electron main process, which takes this Host down
+      // with it. The Host is the shell's direct child, so the shell is our own
+      // parent; refusing a pid of 0 or 4 keeps a broken launch from being read
+      // as "kill the tree I am standing in".
+      const shellPid = process.ppid
+      if (!Number.isInteger(shellPid) || shellPid <= 4) {
+        appendLog(logFile, `refused: cannot identify the desktop shell (ppid=${String(shellPid)})`)
+        return Response.json({ ok: false, reason: 'not-desktop' }, { status: 409 })
+      }
+
+      const payload = JSON.stringify({ pid: shellPid, exe, log: logFile, pidFile })
       let helperPid = Number.NaN
       try {
         const child = spawn(process.execPath, [HELPER, payload], {
@@ -169,10 +179,11 @@ export function apply(ctx) {
         appendLog(logFile, `could not start the helper: ${String(error)}`)
         return Response.json({ ok: false, reason: 'helper-failed' }, { status: 500 })
       }
-      appendLog(logFile, `helper spawned pid=${String(helperPid)}`)
+      appendLog(logFile, `helper spawned pid=${String(helperPid)} for shell pid=${String(shellPid)}`)
 
-      // Wait for the helper to prove it is running before this process leaves;
-      // otherwise the app could vanish with nothing left to start it.
+      // Confirm the helper is up before handing the app over: the helper kills
+      // this process tree, so a helper that never started would leave nothing
+      // to bring the app back.
       const until = Date.now() + ANNOUNCE_TIMEOUT_MS
       let confirmed = false
       while (Date.now() < until) {
@@ -188,20 +199,7 @@ export function apply(ctx) {
         return Response.json({ ok: false, reason: 'helper-failed' }, { status: 500 })
       }
 
-      appendLog(logFile, 'helper is up; ending this process')
-      const exit = ctx.get('appExit')
-      if (typeof exit !== 'function') {
-        appendLog(logFile, 'no appExit service; the app stays up')
-        return Response.json({ ok: false, reason: 'no-exit' }, { status: 503 })
-      }
-      // Let the response reach the page before this process goes.
-      setTimeout(() => {
-        try {
-          exit(0)
-        } catch (error) {
-          appendLog(logFile, `appExit failed: ${String(error)}`)
-        }
-      }, 200)
+      appendLog(logFile, 'handing over to the helper; it ends this tree and starts the app again')
       return Response.json({ ok: true, accepted: true, helperPid }, { status: 202 })
     },
   }
