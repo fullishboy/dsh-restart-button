@@ -25,6 +25,18 @@ window.__ModuleLoader__.load({
     /** Route the Host registers; keep in sync with index.js. */
     const ROUTE = '/api/restart-button/request'
 
+    /**
+     * Leave a breadcrumb for anyone whose sidebar shows no row: the entry was
+     * loaded, so from here on the fault is in the slot, not in the package.
+     */
+    function note(message) {
+      try {
+        console.info(`[restart-button] ${message}`)
+      } catch {
+        /* a console that refuses a log must not break the row */
+      }
+    }
+
     const COPY = {
       en: {
         idle: 'Restart',
@@ -296,8 +308,9 @@ window.__ModuleLoader__.load({
           }
         }, 'restart-button: styles')
 
-        ctx.slots.inject('sidebar.footer.action', () =>
-          ctx.slots.register(
+        ctx.slots.inject('sidebar.footer.action', () => {
+          note('registering the restart row on sidebar.footer.action')
+          return ctx.slots.register(
             {
               name: 'sidebar.footer.action',
               id: 'restart-button',
@@ -305,8 +318,8 @@ window.__ModuleLoader__.load({
               inject: () => ({ sessions: ctx.sessions.list }),
             },
             RestartRow,
-          ),
-        )
+          )
+        })
       },
     }
   },

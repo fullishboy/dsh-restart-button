@@ -50,6 +50,19 @@ dsh plugin add <这个目录的路径>
 
 然后重启一次 DSH，这行会出现在侧栏底部。
 
+**不要用包名装。** `@dsh-local/` 是本地范围，npm 上没有它；必须用路径或 Git 地址：
+
+```sh
+dsh plugin add github:fullishboy/dsh-restart-button
+```
+
+用 Git 地址时，装进去的是 `package.json` 的 `files` 白名单里的文件，所以这个包必须是自足
+的：`client.js` 把文案、样式、图标全部自带，`package.json` 里也没有任何运行时依赖。
+
+如果装完侧栏没有这行，先看 `plugin_manager` 里 `restart-button` 是不是 `fiberPhase: active`
+（Host 侧是否起来了），再看浏览器控制台有没有 `[restart-button] registering the restart row`
+（客户端是否起来了）。两者都没有，就是没装上，不是没渲染。
+
 要让这行真能重启，必须有监管进程在跑。最简单的办法是通过它启动应用：双击 `start-dsh.bat`（它指向应用自带的 Node 运行时），或者自己跑：
 
 ```sh
@@ -146,6 +159,16 @@ dsh plugin add <path-to-this-directory>
 ```
 
 Then start DSH once more; the row appears in the sidebar foot.
+
+**Do not install it by package name.** `@dsh-local/` is a local scope that the npm registry does not have; use a path or the Git address instead:
+
+```sh
+dsh plugin add github:fullishboy/dsh-restart-button
+```
+
+A Git install ships only what `package.json` lists in `files`, which is why this package is self-contained: `client.js` carries its own copy, styles and glyph, and `package.json` declares no runtime dependency.
+
+If the row is missing after installing, check first that `plugin_manager` shows `restart-button` as `fiberPhase: active` (the host half came up), then that the browser console carries `[restart-button] registering the restart row` (the client half came up). Neither means the package did not install; it does not mean the row failed to render.
 
 For the row to actually restart anything, a supervisor must be running. The simplest way is to launch the app through it: double-click `start-dsh.bat`, which points at the app's own bundled Node runtime, or run it yourself:
 
