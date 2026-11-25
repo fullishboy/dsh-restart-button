@@ -5,23 +5,30 @@
  * routes live under the connection's `/api` prefix and allow [A-Za-z0-9_$.-]
  * segments).
  *
- * The button cannot restart the app from inside it. The desktop shell treats a
- * Host that leaves on its own as a crash — the "startup failed" dialog — and a
- * plugin cannot reach `app.relaunch()` from the Host at all. So this route only
- * leaves a request behind in `$DSH_HOME/restart-button/restart-request.json`,
- * and the supervisor the user launched the app with (`supervisor/dsh-watch.mjs`)
- * is what ends the app and starts it again. Without that supervisor watching,
- * the request file simply sits there and nothing happens.
+ * A plugin cannot restart the app from inside it: the desktop shell treats a
+ * Host that leaves on its own as a crash, and `app.relaunch()` is out of reach.
+ * So this route spawns `supervisor/dsh-watch.mjs` detached — outside the app's
+ * process tree — waits until that helper announces itself, and only then ends
+ * this process. The helper does the rest: it ends the app's tree, starts the
+ * executable again, watches the new instance for a few seconds, and exits.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** Exact Fetch route the browser button posts to. */
 export const ROUTE = '/api/restart-button/request'
 
 /** Only the connection service can answer the button. */
 export const inject = ['connection']
+
+/** The helper that runs outside the app tree. */
+const HELPER = fileURLToPath(new URL('./supervisor/dsh-watch.mjs', import.meta.url))
+
+/** How long the helper may take to announce itself. */
+const ANNOUNCE_TIMEOUT_MS = 10000
 
 /** `$DSH_HOME/restart-button`, falling back to `~/.dsh/restart-button`. */
 function stateDirectory() {
@@ -46,32 +53,6 @@ function runningWork(ctx) {
   return running
 }
 
-/**
- * Whether a supervisor from `supervisor/dsh-watch.mjs` is watching this home.
- *
- * The pid file outlives a supervisor that was killed, so the recorded pid is
- * checked rather than trusted: a stale one must not make the button accept a
- * request that nobody will act on.
- */
-function supervisorRunning(stateDir) {
-  const pidFile = join(stateDir, 'watch.pid')
-  if (!existsSync(pidFile)) return false
-  let pid = Number.NaN
-  try {
-    pid = Number.parseInt(readFileSync(pidFile, 'utf8').trim(), 10)
-  } catch {
-    return false
-  }
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    // EPERM means the process exists but belongs to somebody else.
-    return error?.code === 'EPERM'
-  }
-}
-
 function appendLog(file, line) {
   try {
     appendFileSync(file, `${new Date().toISOString()} ${line}\n`)
@@ -80,10 +61,33 @@ function appendLog(file, line) {
   }
 }
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Whether a process is still there; EPERM means it exists but is not ours. */
+function alive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
+  }
+}
+
+/** Read the pid the helper wrote, if any. */
+function announcedPid(pidFile) {
+  try {
+    if (!existsSync(pidFile)) return Number.NaN
+    return Number.parseInt(readFileSync(pidFile, 'utf8').trim(), 10)
+  } catch {
+    return Number.NaN
+  }
+}
+
 export function apply(ctx) {
   const stateDir = stateDirectory()
   const logFile = join(stateDir, 'restart.log')
-  const requestFile = join(stateDir, 'restart-request.json')
+  const pidFile = join(stateDir, 'helper.pid')
 
   ctx.effect(() => {
     try {
@@ -98,30 +102,75 @@ export function apply(ctx) {
     methods: ['POST'],
     requestBody: 'buffered',
     async fetch() {
-      appendLog(logFile, `request received exe=${String(process.env.DSH_NODE_EXECUTABLE)}`)
-      if (!supervisorRunning(stateDir)) {
-        // Nothing outside the app is watching, so a request would only strand.
-        return Response.json({ ok: false, reason: 'no-supervisor' }, { status: 409 })
-      }
       const running = runningWork(ctx)
       if (running.length > 0) {
+        appendLog(logFile, `refused: ${running.length} turn(s) still running`)
         return Response.json({ ok: false, reason: 'busy', running }, { status: 409 })
       }
 
-      const record = {
-        at: new Date().toISOString(),
-        reason: 'button',
-        pid: process.pid,
-        host: process.env.DSH_DESKTOP_HOST_PORT ?? '',
+      const exe = process.env.DSH_NODE_EXECUTABLE ?? ''
+      if (exe === '') {
+        appendLog(logFile, 'refused: DSH_NODE_EXECUTABLE is missing, so this is not the desktop app')
+        return Response.json({ ok: false, reason: 'not-desktop' }, { status: 409 })
       }
+
+      // A leftover announcement from an earlier helper must not be mistaken for
+      // the one this request starts.
       try {
-        writeFileSync(requestFile, `${JSON.stringify(record, null, 2)}\n`)
-      } catch (error) {
-        appendLog(logFile, `could not write the request: ${String(error)}`)
-        return Response.json({ ok: false, reason: 'request-failed' }, { status: 500 })
+        if (existsSync(pidFile)) rmSync(pidFile, { force: true })
+      } catch {
+        // Nothing else reads it before the new helper writes.
       }
-      appendLog(logFile, `restart requested; supervisor picks it up within a second`)
-      return Response.json({ ok: true, accepted: true }, { status: 202 })
+
+      const payload = JSON.stringify({ pid: process.pid, exe, log: logFile, pidFile })
+      let helperPid = Number.NaN
+      try {
+        const child = spawn(process.execPath, [HELPER, payload], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        })
+        helperPid = child.pid ?? Number.NaN
+        child.unref()
+      } catch (error) {
+        appendLog(logFile, `could not start the helper: ${String(error)}`)
+        return Response.json({ ok: false, reason: 'helper-failed' }, { status: 500 })
+      }
+      appendLog(logFile, `helper spawned pid=${String(helperPid)}`)
+
+      // Wait for the helper to prove it is running before this process leaves;
+      // otherwise the app could vanish with nothing left to start it.
+      const until = Date.now() + ANNOUNCE_TIMEOUT_MS
+      let confirmed = false
+      while (Date.now() < until) {
+        const announced = announcedPid(pidFile)
+        if (alive(announced)) {
+          confirmed = true
+          break
+        }
+        await delay(100)
+      }
+      if (!confirmed) {
+        appendLog(logFile, 'the helper never announced itself; the app stays up')
+        return Response.json({ ok: false, reason: 'helper-failed' }, { status: 500 })
+      }
+
+      appendLog(logFile, 'helper is up; ending this process')
+      const exit = ctx.get('appExit')
+      if (typeof exit !== 'function') {
+        appendLog(logFile, 'no appExit service; the app stays up')
+        return Response.json({ ok: false, reason: 'no-exit' }, { status: 503 })
+      }
+      // Let the response reach the page before this process goes.
+      setTimeout(() => {
+        try {
+          exit(0)
+        } catch (error) {
+          appendLog(logFile, `appExit failed: ${String(error)}`)
+        }
+      }, 200)
+      return Response.json({ ok: true, accepted: true, helperPid }, { status: 202 })
     },
   }
 
