@@ -1,46 +1,32 @@
 /**
- * One-shot restart helper, spawned by the plugin when the button is pressed.
+ * One-shot restart helper.
  *
- * It runs outside the app's process tree (the plugin spawns it detached), so it
- * can end the app and start it again without killing itself: `taskkill /T` walks
- * the parent chain, and this process is not on it.
+ * It is started by `launch-helper.ps1` through `Win32_Process.Create`, so its
+ * parent is `WmiPrvSE.exe` and it is *not* a descendant of the app. That is the
+ * whole point: `taskkill /T` walks the app's descendants, so a helper started
+ * by the app itself would be ended by the very kill it issues.
  *
- * Lifecycle: end the app -> wait for it to go -> start it again -> watch the new
- * process for a few seconds -> exit. It never stays resident, so a later press
- * spawns a fresh one.
+ * Sequence: announce the pid, give the Host a moment to answer the browser,
+ * end the app's tree, wait until it is really gone, start the app again, watch
+ * the new instance briefly, then exit. It never stays resident.
  *
- * Usage: node dsh-watch.mjs '{"pid":1234,"exe":"...","log":"...","pidFile":"..."}'
+ * argv[2] is base64 JSON `{ pid, exe, log, pidFile }` — base64 because the
+ * provider parses the command line and quotes would not survive it.
  */
-import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { execFileSync, spawn } from 'node:child_process'
-import { dirname } from 'node:path'
+import { execFile, spawn } from 'node:child_process'
+import { appendFileSync, rmSync, writeFileSync } from 'node:fs'
 
-/** How long a killed process may take to disappear. */
+/** How long the Host gets to answer the browser before the tree goes away. */
+const SETTLE_MS = 1500
+
+/** How long the app may take to disappear after the kill. */
 const GONE_TIMEOUT_MS = 20000
-/** How long the new instance must survive before the restart counts. */
-const SETTLE_MS = 6000
+
+/** How long the new instance is watched before the helper calls it a day. */
+const WATCH_MS = 6000
+
+/** Poll interval while waiting for the app to disappear. */
 const POLL_MS = 200
-
-const options = (() => {
-  try {
-    return JSON.parse(process.argv[2] ?? '{}')
-  } catch {
-    return {}
-  }
-})()
-
-const logFile = typeof options.log === 'string' ? options.log : undefined
-const pidFile = typeof options.pidFile === 'string' ? options.pidFile : undefined
-
-function log(line) {
-  if (logFile === undefined) return
-  try {
-    mkdirSync(dirname(logFile), { recursive: true })
-    appendFileSync(logFile, `${new Date().toISOString()} [helper] ${line}\n`)
-  } catch {
-    // Logging must never break the restart.
-  }
-}
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -55,98 +41,94 @@ function alive(pid) {
   }
 }
 
-async function waitGone(pid, budgetMs) {
-  const until = Date.now() + budgetMs
-  while (Date.now() < until) {
-    if (!alive(pid)) return true
-    await delay(POLL_MS)
-  }
-  return !alive(pid)
+function readPayload() {
+  const raw = process.argv[2]
+  if (typeof raw !== 'string' || raw === '') throw new Error('no payload argument')
+  const parsed = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'))
+  const pid = Number(parsed.pid)
+  if (!Number.isInteger(pid) || pid <= 4) throw new Error(`unusable target pid: ${String(parsed.pid)}`)
+  if (typeof parsed.exe !== 'string' || parsed.exe === '') throw new Error('no executable in the payload')
+  return { pid, exe: parsed.exe, log: parsed.log, pidFile: parsed.pidFile }
 }
 
-/** End the whole tree, so the Electron shell and Host go together. */
 function killTree(pid) {
-  try {
-    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-    log(`taskkill ${pid} done`)
-  } catch (error) {
-    log(`taskkill ${pid} failed: ${String(error?.message ?? error)}`)
-  }
-}
-
-function announce() {
-  if (pidFile === undefined) return
-  try {
-    mkdirSync(dirname(pidFile), { recursive: true })
-    writeFileSync(pidFile, `${process.pid}\n`)
-    log(`announced pid ${process.pid}`)
-  } catch {
-    // The app waits for this file; a failure shows up as a refused restart.
-  }
-}
-
-function clearAnnouncement() {
-  if (pidFile === undefined) return
-  try {
-    if (existsSync(pidFile)) rmSync(pidFile, { force: true })
-  } catch {
-    // A leftover pid file is ignored by the next helper.
-  }
+  return new Promise((resolve) => {
+    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, (error, stdout, stderr) => {
+      resolve({ ok: error === null || error === undefined, output: `${stdout ?? ''}${stderr ?? ''}`.trim() })
+    })
+  })
 }
 
 async function main() {
-  announce()
-
-  const target = Number.parseInt(String(options.pid ?? ''), 10)
-  const exe = typeof options.exe === 'string' ? options.exe : ''
-  if (!Number.isInteger(target) || target <= 0) {
-    log('no target pid; nothing to restart')
-    return 1
-  }
-  if (exe === '') {
-    log('no executable path; nothing to start')
-    return 1
+  let payload
+  try {
+    payload = readPayload()
+  } catch (error) {
+    // Without a usable payload there is nothing to write to and nothing to do.
+    process.stderr.write(`restart helper: ${String(error)}\n`)
+    process.exit(2)
   }
 
-  // End the Electron main process, not the Host: with `/T` the whole tree goes
-  // down at once, so Electron never runs its crash reporter and no "startup
-  // failed" dialog appears. Killing the Host instead leaves the shell alive to
-  // report a crash.
-  log(`restarting ${target}`)
-  killTree(target)
-  if (!(await waitGone(target, GONE_TIMEOUT_MS))) {
-    log(`pid ${target} is still running after ${GONE_TIMEOUT_MS} ms; giving up`)
-    return 1
-  }
-  log(`pid ${target} is gone`)
-
-  // Nothing holds the single-instance lock now, so this launch owns it.
-  const child = spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: true })
-  const started = child.pid
-  log(`started ${exe} pid=${String(started)}`)
-  child.unref()
-
-  if (!Number.isInteger(started) || started <= 0) {
-    log('the launcher did not report a pid')
-    return 1
+  const note = (message) => {
+    try {
+      appendFileSync(payload.log, `${new Date().toISOString()} helper[${process.pid}]: ${message}\n`)
+    } catch {
+      // Logging must never stop the restart.
+    }
   }
 
+  // The Host polls this file to know the helper is really up before it answers
+  // the browser; a helper that died on arrival must not be reported as success.
+  if (typeof payload.pidFile === 'string' && payload.pidFile !== '') {
+    try {
+      writeFileSync(payload.pidFile, String(process.pid))
+    } catch {
+      // A read-only state directory only costs the Host its confirmation.
+    }
+  }
+
+  note(`launched outside the app tree (parent pid ${process.ppid}); target ${payload.pid}`)
   await delay(SETTLE_MS)
-  if (alive(started)) {
-    log(`pid ${started} survived ${SETTLE_MS} ms; restart done`)
-    return 0
+
+  const killed = await killTree(payload.pid)
+  note(killed.ok ? `ended the app tree: ${killed.output.replace(/\r?\n/g, ' | ')}` : `taskkill failed: ${killed.output}`)
+
+  let waited = 0
+  while (alive(payload.pid) && waited < GONE_TIMEOUT_MS) {
+    await delay(POLL_MS)
+    waited += POLL_MS
   }
-  log(`pid ${started} exited within ${SETTLE_MS} ms; the app did not come back`)
-  return 1
+  if (alive(payload.pid)) {
+    note(`the app is still there after ${waited}ms; giving up so nothing is left half-done`)
+    process.exit(1)
+  }
+  note(`the app is gone after ${waited}ms; starting it again`)
+
+  let child
+  try {
+    // Detached so the new app does not die with this helper.
+    child = spawn(payload.exe, [], { detached: true, stdio: 'ignore', windowsHide: false })
+    child.unref()
+  } catch (error) {
+    note(`could not start ${payload.exe}: ${String(error)}`)
+    process.exit(1)
+  }
+
+  note(`started ${payload.exe} as pid ${String(child.pid)}`)
+  await delay(WATCH_MS)
+
+  if (!alive(child.pid)) {
+    note(`the new instance (pid ${String(child.pid)}) did not survive ${WATCH_MS}ms`)
+    process.exit(1)
+  }
+
+  note('the new instance is up; the helper is done')
+  try {
+    if (typeof payload.pidFile === 'string' && payload.pidFile !== '') rmSync(payload.pidFile, { force: true })
+  } catch {
+    // A stale pid file only makes the next confirmation slower.
+  }
+  process.exit(0)
 }
 
-main()
-  .catch((error) => {
-    log(`crashed: ${String(error?.stack ?? error)}`)
-    return 1
-  })
-  .finally(() => {
-    clearAnnouncement()
-    log('helper exiting')
-    process.exit(0)
-  })
+await main()

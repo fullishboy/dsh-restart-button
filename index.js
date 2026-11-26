@@ -1,22 +1,28 @@
 /**
  * Host half of the restart button.
  *
- * Route: POST /api/restart-button/request (same-origin, owner only; exact Fetch
- * routes live under the connection's `/api` prefix and allow [A-Za-z0-9_$.-]
- * segments).
+ * Route: POST /api/restart-button/request. Exact Fetch routes live under the
+ * connection's `/api` prefix and only allow [A-Za-z0-9_$.-] segments.
  *
- * A plugin cannot restart the app from inside it: the desktop shell treats a
- * Host that leaves on its own as a crash, and `app.relaunch()` is out of reach.
- * So this route spawns `supervisor/dsh-watch.mjs` detached — outside the app's
- * process tree — waits until that helper announces itself, and only then ends
- * this process. The helper does the rest: it ends the app's tree, starts the
- * executable again, watches the new instance for a few seconds, and exits.
+ * A plugin cannot restart the app from inside it. `app.relaunch()` belongs to
+ * the Electron main process, and the desktop shell treats a Host that leaves on
+ * its own as a crash. Worse, a helper started with `spawn(..., detached)` is
+ * still a *descendant* of the app: `taskkill /T` walks descendants, so the
+ * helper would be ended by the very kill it issues.
+ *
+ * So the helper is started through `Win32_Process.Create` (see
+ * `supervisor/launch-helper.ps1`). Its parent becomes `WmiPrvSE.exe`, it sits
+ * outside the app's tree, and it inherits this process's elevated token — which
+ * it needs, because the desktop app runs elevated and a weaker helper could not
+ * end it. The helper announces itself, and only then does this route report
+ * success; the helper itself ends the app's tree and starts it again.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 /** Name of the packaged desktop executable. */
 const APP_EXECUTABLE = 'DeepSeek Harness.exe'
@@ -27,11 +33,16 @@ export const ROUTE = '/api/restart-button/request'
 /** Only the connection service can answer the button. */
 export const inject = ['connection']
 
-/** The helper that runs outside the app tree. */
+/** The one-shot helper that runs outside the app tree. */
 const HELPER = fileURLToPath(new URL('./supervisor/dsh-watch.mjs', import.meta.url))
 
-/** How long the helper may take to announce itself. */
+/** The launcher that asks WMI to create the helper. */
+const LAUNCHER = fileURLToPath(new URL('./supervisor/launch-helper.ps1', import.meta.url))
+
+/** How long the helper may take to appear after the launcher returns. */
 const ANNOUNCE_TIMEOUT_MS = 10000
+
+const run = promisify(execFile)
 
 /** `$DSH_HOME/restart-button`, falling back to `~/.dsh/restart-button`. */
 function stateDirectory() {
@@ -115,6 +126,38 @@ function applicationExecutable() {
   return undefined
 }
 
+/**
+ * Ask WMI to start the helper and return its pid.
+ *
+ * The payload travels as base64: the provider parses the command line it is
+ * given, and quotes or spaces in a JSON blob would not survive that.
+ */
+async function startHelper({ shellPid, exe, logFile, pidFile }) {
+  const payload = Buffer.from(JSON.stringify({ pid: shellPid, exe, log: logFile, pidFile }), 'utf8').toString('base64')
+  const { stdout } = await run(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      LAUNCHER,
+      '-Node',
+      process.execPath,
+      '-Helper',
+      HELPER,
+      '-Payload',
+      payload,
+      '-Log',
+      logFile,
+    ],
+    { encoding: 'utf8', windowsHide: true, timeout: 25000 },
+  )
+  const match = /\bPID=(\d+)\b/.exec(stdout ?? '')
+  return match === null ? Number.NaN : Number.parseInt(match[1], 10)
+}
+
 export function apply(ctx) {
   const stateDir = stateDirectory()
   const logFile = join(stateDir, 'restart.log')
@@ -144,7 +187,15 @@ export function apply(ctx) {
         appendLog(logFile, `refused: no ${APP_EXECUTABLE} next to the profile; this is not the packaged desktop app`)
         return Response.json({ ok: false, reason: 'not-desktop' }, { status: 409 })
       }
-      appendLog(logFile, `executable resolved: ${exe}`)
+
+      // The Host is the shell's direct child, so the shell is our own parent.
+      // Refusing 0 and 4 keeps a broken launch from being read as "kill the
+      // tree I am standing in".
+      const shellPid = process.ppid
+      if (!Number.isInteger(shellPid) || shellPid <= 4) {
+        appendLog(logFile, `refused: cannot identify the desktop shell (ppid=${String(shellPid)})`)
+        return Response.json({ ok: false, reason: 'not-desktop' }, { status: 409 })
+      }
 
       // A leftover announcement from an earlier helper must not be mistaken for
       // the one this request starts.
@@ -154,41 +205,23 @@ export function apply(ctx) {
         // Nothing else reads it before the new helper writes.
       }
 
-      // The helper ends the Electron main process, which takes this Host down
-      // with it. The Host is the shell's direct child, so the shell is our own
-      // parent; refusing a pid of 0 or 4 keeps a broken launch from being read
-      // as "kill the tree I am standing in".
-      const shellPid = process.ppid
-      if (!Number.isInteger(shellPid) || shellPid <= 4) {
-        appendLog(logFile, `refused: cannot identify the desktop shell (ppid=${String(shellPid)})`)
-        return Response.json({ ok: false, reason: 'not-desktop' }, { status: 409 })
-      }
-
-      const payload = JSON.stringify({ pid: shellPid, exe, log: logFile, pidFile })
       let helperPid = Number.NaN
       try {
-        const child = spawn(process.execPath, [HELPER, payload], {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-          env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-        })
-        helperPid = child.pid ?? Number.NaN
-        child.unref()
+        helperPid = await startHelper({ shellPid, exe, logFile, pidFile })
       } catch (error) {
-        appendLog(logFile, `could not start the helper: ${String(error)}`)
+        appendLog(logFile, `the launcher failed: ${String(error?.message ?? error)}`)
         return Response.json({ ok: false, reason: 'helper-failed' }, { status: 500 })
       }
-      appendLog(logFile, `helper spawned pid=${String(helperPid)} for shell pid=${String(shellPid)}`)
+      appendLog(logFile, `launcher reported helper pid=${String(helperPid)} for shell pid=${String(shellPid)}`)
 
-      // Confirm the helper is up before handing the app over: the helper kills
-      // this process tree, so a helper that never started would leave nothing
-      // to bring the app back.
+      // Confirm the helper is up before handing the app over: the helper ends
+      // this tree, so a helper that never started would leave nothing to bring
+      // the app back.
       const until = Date.now() + ANNOUNCE_TIMEOUT_MS
       let confirmed = false
       while (Date.now() < until) {
         const announced = announcedPid(pidFile)
-        if (alive(announced)) {
+        if (alive(announced) || alive(helperPid)) {
           confirmed = true
           break
         }
