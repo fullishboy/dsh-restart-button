@@ -20,7 +20,7 @@
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
@@ -108,13 +108,50 @@ function announcedPid(pidFile) {
  */
 function applicationExecutable() {
   const candidates = []
+  // The Host runs under ELECTRON_RUN_AS_NODE inside the shell itself, so on the
+  // desktop build execPath *is* the packaged executable.
+  if (typeof process.execPath === 'string' && basename(process.execPath).toLowerCase() === APP_EXECUTABLE.toLowerCase()) {
+    candidates.push(process.execPath)
+  }
+  // argv[2] is `<root>/resources/app.asar/dsh`, so the root is two levels up
+  // from its parent directory.
   const dshDirectory = process.argv[2]
   if (typeof dshDirectory === 'string' && dshDirectory !== '') {
-    candidates.push(join(dirname(dshDirectory), '..', '..', '..', APP_EXECUTABLE))
+    candidates.push(join(dirname(dirname(dshDirectory)), '..', '..', APP_EXECUTABLE))
   }
   const localAppData = process.env.LOCALAPPDATA
   if (typeof localAppData === 'string' && localAppData !== '') {
     candidates.push(join(localAppData, 'Programs', 'DeepSeek Harness', APP_EXECUTABLE))
+  }
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      // A malformed candidate is simply skipped.
+    }
+  }
+  return undefined
+}
+
+/**
+ * The bundled Node runtime, or undefined when it cannot be found.
+ *
+ * `process.execPath` is *not* it: the Host runs under `ELECTRON_RUN_AS_NODE`
+ * inside the same executable as the shell, so execPath is the app itself.
+ * Handing that to the launcher starts a second app instance, which dies on the
+ * single-instance lock — the restart then looks like it began and did nothing.
+ */
+function nodeExecutable(appExecutable) {
+  const candidates = []
+  if (typeof process.execPath === 'string' && basename(process.execPath).toLowerCase() === 'node.exe') {
+    candidates.push(process.execPath)
+  }
+  const fromEnv = process.env.DSH_DESKTOP_NODE_EXECUTABLE
+  if (typeof fromEnv === 'string' && fromEnv.toLowerCase().endsWith('node.exe')) candidates.push(fromEnv)
+  if (appExecutable !== undefined) {
+    candidates.push(
+      join(dirname(appExecutable), 'resources', 'runtime', 'primary-runtime', 'dependencies', 'node', 'bin', 'node.exe'),
+    )
   }
   for (const candidate of candidates) {
     try {
@@ -132,7 +169,7 @@ function applicationExecutable() {
  * The payload travels as base64: the provider parses the command line it is
  * given, and quotes or spaces in a JSON blob would not survive that.
  */
-async function startHelper({ shellPid, exe, logFile, pidFile }) {
+async function startHelper({ node, shellPid, exe, logFile, pidFile }) {
   const payload = Buffer.from(JSON.stringify({ pid: shellPid, exe, log: logFile, pidFile }), 'utf8').toString('base64')
   const { stdout } = await run(
     'powershell.exe',
@@ -144,7 +181,7 @@ async function startHelper({ shellPid, exe, logFile, pidFile }) {
       '-File',
       LAUNCHER,
       '-Node',
-      process.execPath,
+      node,
       '-Helper',
       HELPER,
       '-Payload',
@@ -188,6 +225,12 @@ export function apply(ctx) {
         return Response.json({ ok: false, reason: 'not-desktop' }, { status: 409 })
       }
 
+      const node = nodeExecutable(exe)
+      if (node === undefined) {
+        appendLog(logFile, `refused: no bundled node.exe under ${dirname(exe)}; the helper cannot be started`)
+        return Response.json({ ok: false, reason: 'no-node' }, { status: 409 })
+      }
+
       // The Host is the shell's direct child, so the shell is our own parent.
       // Refusing 0 and 4 keeps a broken launch from being read as "kill the
       // tree I am standing in".
@@ -207,7 +250,7 @@ export function apply(ctx) {
 
       let helperPid = Number.NaN
       try {
-        helperPid = await startHelper({ shellPid, exe, logFile, pidFile })
+        helperPid = await startHelper({ node, shellPid, exe, logFile, pidFile })
       } catch (error) {
         appendLog(logFile, `the launcher failed: ${String(error?.message ?? error)}`)
         return Response.json({ ok: false, reason: 'helper-failed' }, { status: 500 })

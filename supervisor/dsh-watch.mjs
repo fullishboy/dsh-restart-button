@@ -15,6 +15,7 @@
  */
 import { execFile, spawn } from 'node:child_process'
 import { appendFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 /** How long the Host gets to answer the browser before the tree goes away. */
 const SETTLE_MS = 1500
@@ -106,8 +107,15 @@ async function main() {
 
   let child
   try {
-    // Detached so the new app does not die with this helper.
-    child = spawn(payload.exe, [], { detached: true, stdio: 'ignore', windowsHide: false })
+    // Detached so the new app does not die with this helper. The working
+    // directory is set explicitly: a WMI-created process starts in System32,
+    // and the app should not inherit that.
+    child = spawn(payload.exe, [], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: dirname(payload.exe),
+      windowsHide: false,
+    })
     child.unref()
   } catch (error) {
     note(`could not start ${payload.exe}: ${String(error)}`)
