@@ -1,7 +1,6 @@
 {
   "name": "@dsh-local/restart-button",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
   "description": "One-click restart for DeepSeek Harness Desktop, with a two-step confirm.",
   "license": "MIT",
