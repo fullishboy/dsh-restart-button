@@ -81,7 +81,7 @@ window.__ModuleLoader__.load({
     const CSS = [
       '.rb-layer { box-sizing: border-box; flex: none; display: flex; align-items: center; width: 100%;',
       '  margin: 8px 0 0; padding: 0 2px; }',
-      '.rb-row { box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; height: 42px;',
+      '.rb-row { box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; height: 44px;',
       '  margin: 0; padding: 0 8px; border: none; border-radius: 12px; background: transparent;',
       '  color: var(--dsw-alias-label-primary); font: inherit; font-size: 14px; text-align: left;',
       '  cursor: pointer; overflow: hidden; }',
