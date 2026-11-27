@@ -63,6 +63,10 @@ dsh plugin add <这个目录的路径>
 dsh plugin add github:fullishboy/dsh-restart-button
 ```
 
+**注意 npm 上有个同名包。** 注册表里的 `dsh-restart-button`（作者 `jiqiu`，最新 `0.1.2`，仓库 `jiqiu0709/dsh-restart-button`）是**别人写的另一个插件**，只是名字像。手输 `dsh plugin add dsh-restart-button` 装到的是它：依赖里会出现 `dsh-restart-button: ^0.1.2`，侧栏却什么都不会出现 —— 这不是本项目装坏了，是装错了东西。
+
+装对了的判据只有一条：profile 的 `package.json` 里依赖名是 **`@dsh-local/restart-button`**，值是路径或 `github:fullishboy/...`。
+
 用 Git 地址时，装进去的是 `package.json` 的 `files` 白名单里的文件，所以这个包必须是自足的：`client.js` 把文案、样式、图标全部自带，`package.json` 里也没有任何运行时依赖。
 
 如果装完侧栏没有这行，先看 `plugin_manager` 里 `restart-button` 是不是 `fiberPhase: active`（Host 侧是否起来了），再看浏览器控制台有没有 `[restart-button] registering the restart row`（客户端是否起来了）。两者都没有，就是没装上，不是没渲染。
@@ -145,6 +149,10 @@ dsh plugin add github:fullishboy/dsh-restart-button
 ```
 
 A Git install ships only what `package.json` lists in `files`, which is why this package is self-contained: `client.js` carries its own copy, styles and glyph, and `package.json` declares no runtime dependency.
+
+**Another plugin on npm carries almost this name.** The registry has `dsh-restart-button` (by `jiqiu`, latest `0.1.2`, repo `jiqiu0709/dsh-restart-button`) — a different plugin by a different author, not this one. Typing `dsh plugin add dsh-restart-button` installs that package: the profile gets `dsh-restart-button: ^0.1.2`, and no row ever appears. Nothing is broken; the wrong package was installed.
+
+The only reliable check is the dependency name: it has to be **`@dsh-local/restart-button`**, with a path or `github:fullishboy/...` as its value.
 
 If the row is missing after installing, check first that `plugin_manager` shows `restart-button` as `fiberPhase: active` (the host half came up), then that the browser console carries `[restart-button] registering the restart row` (the client half came up). Neither means the package did not install; it does not mean the row failed to render.
 
