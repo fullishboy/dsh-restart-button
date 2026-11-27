@@ -80,8 +80,8 @@ window.__ModuleLoader__.load({
 
     const CSS = [
       '.rb-layer { flex: none; display: flex; align-items: center; width: 100%; margin: 8px 0 0; }',
-      '.rb-row { display: flex; align-items: center; gap: 8px; width: calc(100% + 4px); height: 42px;',
-      '  margin: 0 -2px; padding: 0 8px; border: none; border-radius: 12px; background: transparent;',
+      '.rb-row { box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; height: 42px;',
+      '  margin: 0; padding: 0 8px; border: none; border-radius: 12px; background: transparent;',
       '  color: var(--dsw-alias-label-primary); font: inherit; font-size: 14px; text-align: left;',
       '  cursor: pointer; overflow: hidden; }',
       '@media (hover: hover) { .rb-row:hover { background: var(--dsw-alias-interactive-bg-hover); } }',
