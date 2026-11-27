@@ -79,7 +79,8 @@ window.__ModuleLoader__.load({
     }
 
     const CSS = [
-      '.rb-layer { flex: none; display: flex; align-items: center; width: 100%; margin: 8px 0 0; }',
+      '.rb-layer { box-sizing: border-box; flex: none; display: flex; align-items: center; width: 100%;',
+      '  margin: 8px 0 0; padding: 0 2px; }',
       '.rb-row { box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; height: 42px;',
       '  margin: 0; padding: 0 8px; border: none; border-radius: 12px; background: transparent;',
       '  color: var(--dsw-alias-label-primary); font: inherit; font-size: 14px; text-align: left;',
@@ -98,7 +99,7 @@ window.__ModuleLoader__.load({
       '  color: var(--dsw-alias-label-on-color); }',
       '@media (hover: hover) { .rb-choice[data-primary]:hover { background: var(--dsw-alias-button-info-hover); } }',
       '.rb-choice[data-primary]:disabled { opacity: 0.4; cursor: default; }',
-      '.rb-layer.rb-rail { width: 36px; height: 36px; margin: 0; }',
+      '.rb-layer.rb-rail { width: 36px; height: 36px; margin: 0; padding: 0; }',
       '.rb-rail .rb-row { justify-content: center; width: 36px; height: 36px; padding: 0; border-radius: 50%; }',
       '.rb-rail .rb-text, .rb-rail .rb-split { display: none; }',
     ].join('\n')
