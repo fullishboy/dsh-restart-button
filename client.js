@@ -39,28 +39,30 @@ window.__ModuleLoader__.load({
 
     const COPY = {
       en: {
-        idle: 'Restart',
-        confirm: 'Restart now?',
+        idle: 'Restart app',
+        confirm: 'Restart app now?',
         yes: 'Restart',
         no: 'Cancel',
-        aria: 'Restart DeepSeek Harness',
+        aria: 'Restart the DeepSeek Harness app',
         busy: 'A turn is running. Stop it first.',
-        sending: 'Restarting…',
-        intent: 'Restarting…',
+        sending: 'Restarting the app…',
+        intent: 'Restarting the app…',
         failed: 'Could not reach the Host.',
-        noSupervisor: 'Start the app through dsh-watch.mjs to use this.',
+        notDesktop: 'Only available in the desktop app.',
+        noNode: 'The bundled Node runtime was not found.',
       },
       zh: {
-        idle: '重启',
-        confirm: '现在重启？',
+        idle: '重启应用',
+        confirm: '现在重启应用？',
         yes: '重启',
         no: '取消',
-        aria: '重启 DeepSeek Harness',
+        aria: '重启 DeepSeek Harness 应用',
         busy: '有对话正在运行，请先停止。',
-        sending: '正在重启…',
-        intent: '正在重启…',
+        sending: '正在重启应用…',
+        intent: '正在重启应用…',
         failed: '没能连到 Host。',
-        noSupervisor: '请用 dsh-watch.mjs 启动，才能这样重启。',
+        notDesktop: '只在桌面版里可用。',
+        noNode: '找不到应用自带的 Node 运行时。',
       },
     }
 
@@ -205,7 +207,15 @@ window.__ModuleLoader__.load({
         } catch {
           reason = undefined
         }
-        settle(reason === 'busy' ? 'busy' : reason === 'no-supervisor' ? 'noSupervisor' : 'failed', 5000)
+        const next =
+          reason === 'busy'
+            ? 'busy'
+            : reason === 'no-node'
+              ? 'noNode'
+              : reason === 'not-desktop'
+                ? 'notDesktop'
+                : 'failed'
+        settle(next, 5000)
       }, [settle])
 
       const cancel = React.useCallback(
@@ -239,9 +249,11 @@ window.__ModuleLoader__.load({
                 ? text.busy
                 : phase === 'intent'
                   ? text.intent
-                  : phase === 'noSupervisor'
-                    ? text.noSupervisor
-                    : text.failed
+                  : phase === 'notDesktop'
+                    ? text.notDesktop
+                    : phase === 'noNode'
+                      ? text.noNode
+                      : text.failed
       const body =
         phase === 'confirm'
           ? [

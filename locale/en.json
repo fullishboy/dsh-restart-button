@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Restart button",
-    "description": "Adds a Restart row to the sidebar foot. One press opens an in-place confirm; confirming makes the Host restart DeepSeek Harness, and a running agent turn blocks it.",
+    "title": "Restart app",
+    "description": "Adds a Restart app row to the sidebar foot. One press opens an in-place confirm; confirming hands the job to a one-shot helper outside the app, which ends the whole process tree and starts the app again. A running agent turn blocks it. Distinct from dsh-versions' \"Restart service\": this row restarts the desktop application itself.",
     "detail": "docs/DETAIL.md"
   }
 }
